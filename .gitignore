@@ -1,0 +1,20 @@
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Environment / secrets
+*.env
+.env.*
+
+# Local data and logs
+backend/diabetes_trials.json
+*.log
+
+# OS / editor
+.DS_Store
+.vscode/

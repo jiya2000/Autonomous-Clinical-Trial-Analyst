@@ -1,0 +1,23 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+
+  backend:
+    build: ./backend
+    environment:
+      - VLLM_URL=http://host.docker.internal:11434/v1
+      - QDRANT_URL=http://qdrant:6333
+      - LANGCHAIN_TRACING_V2=false
+    depends_on:
+      - qdrant
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
