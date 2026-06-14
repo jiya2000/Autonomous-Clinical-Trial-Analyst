@@ -252,7 +252,3 @@ The ingestion script (`ingest_diabetes_trials.py`) performs the following:
 MIT
 
 ---
-
-<p align="center">
-  <strong>Built with ❤️ for the Amazon ML Challenge 2026</strong>
-</p>
