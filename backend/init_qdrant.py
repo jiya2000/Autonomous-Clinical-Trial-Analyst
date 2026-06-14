@@ -50,26 +50,13 @@ SAMPLE_DOCUMENTS = [
     },
 ]
 
-def embed_text(text: str, dim: int = 128) -> list[float]:
-    """Create a hash-based embedding (same as backend)."""
-    # Create hash of text
-    hash_bytes = hashlib.sha256(text.encode()).digest()
-    
-    # Create embedding by chunking hash
-    embedding = []
-    for i in range(dim):
-        chunk_size = len(hash_bytes) // dim
-        start = i * chunk_size
-        end = start + chunk_size
-        byte_val = sum(hash_bytes[start:end]) % 256
-        embedding.append(byte_val / 256.0)
-    
-    # L2 normalize
-    norm = math.sqrt(sum(x ** 2 for x in embedding))
-    if norm > 0:
-        embedding = [x / norm for x in embedding]
-    
-    return embedding
+from sentence_transformers import SentenceTransformer
+
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
+def embed_text(text: str, dim: int = 384) -> list[float]:
+    """Create a semantic embedding using HuggingFace."""
+    return embedder.encode(text).tolist()
 
 def init_qdrant():
     """Initialize Qdrant with sample documents."""
@@ -77,7 +64,7 @@ def init_qdrant():
     client = QdrantClient(url="http://localhost:6333")
     
     collection_name = "clinical_protocols"
-    vector_size = 128
+    vector_size = 384
     
     # Check if collection exists
     try:

@@ -37,6 +37,15 @@ def _load_diabetes_trials() -> List[Dict[str, Any]]:
     return studies
 
 
+import spacy
+
+# Load SciSpaCy model for Medical NER (fallback to None if not installed)
+try:
+    nlp = spacy.load("en_core_sci_sm")
+except OSError:
+    print("SciSpaCy model 'en_core_sci_sm' not found. Skipping Medical NER extraction.")
+    nlp = None
+
 def _trial_to_payload(study: Dict[str, Any]) -> Dict[str, Any]:
     """Extract a compact text payload for Qdrant from a v2 study object."""
 
@@ -69,11 +78,21 @@ def _trial_to_payload(study: Dict[str, Any]) -> Dict[str, Any]:
 
     text = "\n\n".join(parts).strip()
 
+    # Extract medical entities using SciSpaCy
+    medical_entities = []
+    if nlp and text:
+        # Process up to 2000 chars to keep ingestion fast
+        doc = nlp(text[:2000])
+        entities = list(set([ent.text.lower() for ent in doc.ents]))
+        # Filter for reasonable length entities
+        medical_entities = [e for e in entities if 3 <= len(e) <= 50]
+
     return {
         "nct_id": nct_id,
         "title": title,
         "content": text or title,
         "conditions": conditions,
+        "extracted_entities": medical_entities,
     }
 
 

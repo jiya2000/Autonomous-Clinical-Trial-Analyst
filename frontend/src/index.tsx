@@ -60,7 +60,7 @@ const App: React.FC = () => {
     <div className="app">
       <div className="chat-panel">
         <h1>Autonomous Clinical Trial Analyst</h1>
-        <p className="subtitle">Analyse and interrogate clinical trial protocols with an on-device AI assistant.</p>
+        <p className="subtitle">Analyse and interrogate clinical trial protocols with a local, zero-cost Agentic AI pipeline.</p>
         <div className="chat-window">
           {messages.map((m, idx) => (
             <div key={idx} className={`message ${m.role}`}>

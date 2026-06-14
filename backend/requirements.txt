@@ -1,12 +1,15 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.0
+fastapi
+uvicorn[standard]
 # Let pip choose mutually compatible versions of the LangChain stack
 langgraph
 langchain-core
 langchain-openai
-qdrant-client==1.9.0
-websockets==12.0
-pydantic==2.9.0
-pydantic-settings==2.5.2
-requests==2.32.3
-llama-parse==0.5.0
+qdrant-client
+websockets
+pydantic
+pydantic-settings
+requests
+llama-parse
+sentence-transformers
+spacy
+tf-keras

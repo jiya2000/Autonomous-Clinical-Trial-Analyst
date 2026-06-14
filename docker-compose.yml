@@ -3,6 +3,8 @@ services:
     image: qdrant/qdrant:latest
     ports:
       - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
 
   backend:
     build: ./backend
@@ -21,3 +23,6 @@ services:
       - backend
     ports:
       - "3000:80"
+
+volumes:
+  qdrant_data:

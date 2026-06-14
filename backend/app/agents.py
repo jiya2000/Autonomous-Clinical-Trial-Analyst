@@ -39,41 +39,33 @@ llm = ChatOpenAI(
 
 qdrant_client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
 
-EMBED_DIM = 128
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
-SAMPLE_DOCUMENTS = [
-    {"id": 1, "title": "Phase 3 Randomized Trial of COVID-19 Vaccine", "content": "This Phase 3 randomized controlled trial evaluates the efficacy and safety of a novel COVID-19 vaccine. Participants are randomized 1:1 to receive either vaccine or placebo."},
-    {"id": 2, "title": "Type 2 Diabetes Treatment Trial", "content": "A Phase 3 trial of a novel oral antidiabetic agent. Inclusion criteria: age 18-75 years, HbA1c 7.5%-11%. Primary objective: change in HbA1c from baseline."},
-    {"id": 3, "title": "Cancer Immunotherapy Clinical Trial", "content": "A Phase 2 trial of a PD-1 inhibitor combined with chemotherapy for advanced non-small cell lung cancer. Primary endpoint: overall response rate."},
-    {"id": 4, "title": "Alzheimer's Disease Biomarker Study", "content": "A longitudinal observational study recruiting 500 participants aged 65-85 years. Primary outcome: rate of cognitive decline over 5 years."},
-    {"id": 5, "title": "Hypertension Management Trial", "content": "A cluster-randomized trial comparing intensive versus standard blood pressure control. Systolic BP targets: <120 mmHg (intensive) or <140 mmHg (standard)."},
-    {"id": 6, "title": "Depression Treatment Clinical Trial", "content": "An 8-week double-blind placebo-controlled trial of a novel antidepressant. Primary outcome: change in MADRS score from baseline to week 8."},
-    {"id": 7, "title": "Rare Disease Gene Therapy Study", "content": "A Phase 1/2 open-label study of an AAV-based gene therapy. Enroll up to 15 patients with confirmed genetic mutations. Primary objectives: safety and tolerability."},
-    {"id": 8, "title": "Arthritis Pain Management Trial", "content": "A 12-week randomized double-blind comparison for moderate to severe osteoarthritis. Enroll 300 participants with knee osteoarthritis."},
-]
+# Initialize local HuggingFace embedding model
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+EMBED_DIM = 384
 
+# Initialize CrossEncoder for Re-ranking
+try:
+    reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+except:
+    reranker = None
 
 def embed_text(text: str) -> List[float]:
-    """Create hash-based embedding."""
-    vec = [0.0] * EMBED_DIM
-    tokens = text.lower().split()
-    for tok in tokens:
-        idx = hash(tok) % EMBED_DIM
-        vec[idx] += 1.0
-    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-    return [(v / norm) for v in vec]
+    """Create semantic embedding using HuggingFace."""
+    return embedder.encode(text).tolist()
 
 
 def qdrant_search(query: str, limit: int = 8) -> List[Dict[str, Any]]:
     """Search Qdrant collection."""
     vector = embed_text(query)
-    results = qdrant_client.search(
+    results = qdrant_client.query_points(
         collection_name=settings.clinical_collection,
-        query_vector=vector,
+        query=vector,
         limit=limit,
     )
     docs = []
-    for point in results:
+    for point in results.points:
         docs.append({
             "id": point.id,
             "score": point.score,
@@ -118,18 +110,26 @@ def retrieval_node(state: AgentState) -> dict:
     query = getattr(latest, 'content', str(latest)) if latest else ""
     
     try:
-        docs = qdrant_search(query) if query else []
+        # Fetch top 20 candidates for re-ranking
+        docs = qdrant_search(query, limit=20) if query else []
+        if docs and reranker:
+            trace.append(f"Retrieval Agent: Retrieved {len(docs)} candidates. Re-ranking using CrossEncoder...")
+            pairs = [[query, doc["payload"].get("content", "")] for doc in docs]
+            scores = reranker.predict(pairs)
+            for idx, doc in enumerate(docs):
+                doc["score"] = float(scores[idx])  # Overwrite vector score with rerank score
+            # Sort descending and keep top 5
+            docs = sorted(docs, key=lambda x: x["score"], reverse=True)[:5]
+            
         if docs:
             top = docs[0]
             title = (top.get("payload") or {}).get("title", "Untitled protocol")
-            trace.append(
-                f"Retrieval Agent: Found {len(docs)} relevant protocol snippet(s); top match is '{title}'."
-            )
+            trace.append(f"Retrieval Agent: Final top match after re-ranking is '{title}'. Passing {len(docs)} documents to Analysis.")
         else:
             trace.append("Retrieval Agent: No relevant protocol snippets found for this question.")
     except Exception as e:
         logger.error(f"Retrieval error: {e}")
-        trace.append(f"Retrieval Agent: Encountered an error while searching the protocol library: {e}.")
+        trace.append(f"Retrieval Agent: Encountered an error: {e}.")
         docs = []
     
     return {"retrieved_docs": docs, "next_node": "AnalysisAgent", "trace": trace}
@@ -176,7 +176,7 @@ def analysis_node(state: AgentState) -> dict:
             trace.append("Analysis Agent: Generated a draft answer based on the retrieved context and question.")
             return {
                 "final_answer": answer_text,
-                "next_node": "FINISH",
+                "next_node": "GraderAgent",
                 "trace": trace,
             }
         else:
@@ -195,6 +195,28 @@ def analysis_node(state: AgentState) -> dict:
     trace.append("Analysis Agent: No answer could be generated from the current context.")
     return {"final_answer": "[No answer generated]", "next_node": "FINISH", "trace": trace}
 
+def grader_node(state: AgentState) -> dict:
+    """Evaluate if the answer addresses the question based on the retrieved context."""
+    messages = state.get("messages") or []
+    answer = state.get("final_answer") or ""
+    trace = state.get("trace") or []
+    
+    query = getattr(messages[-1], 'content', str(messages[-1])) if messages else ""
+    
+    grade_prompt = f"Does the following answer directly address the user's question? Respond strictly with 'YES' or 'NO'.\n\nQuestion: {query}\nAnswer: {answer}"
+    
+    try:
+        response = llm.invoke([SystemMessage(content="You are a strict, objective grader."), HumanMessage(content=grade_prompt)])
+        if "YES" in str(response.content).upper():
+            trace.append("Grader Agent: Answer passed self-reflection. Approved for user.")
+        else:
+            trace.append("Grader Agent: Self-reflection failed! Answer does not fully address the question. Flagging answer.")
+            answer += "\n\n*(Self-Reflection Grader Warning: This answer may not fully resolve your query based on the available protocols.)*"
+    except Exception as e:
+        logger.error(f"Grader error: {e}")
+        
+    return {"next_node": "FINISH", "final_answer": answer, "trace": trace}
+
 
 # --- Workflow Builder -------------------------------------------------------
 
@@ -206,6 +228,7 @@ def build_workflow() -> StateGraph:
     workflow.add_node("Supervisor", supervisor_node)
     workflow.add_node("RetrievalAgent", retrieval_node)
     workflow.add_node("AnalysisAgent", analysis_node)
+    workflow.add_node("GraderAgent", grader_node)
     
     workflow.set_entry_point("Supervisor")
     
@@ -215,7 +238,8 @@ def build_workflow() -> StateGraph:
     
     workflow.add_conditional_edges("Supervisor", route)
     workflow.add_edge("RetrievalAgent", "AnalysisAgent")
-    workflow.add_edge("AnalysisAgent", END)
+    workflow.add_edge("AnalysisAgent", "GraderAgent")
+    workflow.add_edge("GraderAgent", END)
     
     return workflow
 
@@ -240,19 +264,7 @@ def _init_qdrant():
             collection_name=collection,
             vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
         )
-        
-        points = []
-        for doc in SAMPLE_DOCUMENTS:
-            text = f"{doc['title']} {doc['content']}"
-            vec = embed_text(text)
-            points.append(PointStruct(
-                id=doc["id"],
-                vector=vec,
-                payload={"title": doc["title"], "content": doc["content"]},
-            ))
-        
-        qdrant_client.upsert(collection_name=collection, points=points)
-        print(f"✓ Created with {len(points)} documents")
+        print(f"✓ Created collection '{collection}'")
     except Exception as e:
         print(f"Warning: Could not initialize Qdrant: {e}")
 
